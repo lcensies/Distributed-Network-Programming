@@ -120,8 +120,8 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
 
         print("Recieved one request from {}".format(self.client_address))
         
-        bytes = self.rfile.readline()
-        
+        # bytes = self.rfile.readline()
+        bytes = self.rfile.read()
         datagram = bytes.strip().decode("ascii")
         print(f"Datagram Recieved from client is: {datagram}")
 
