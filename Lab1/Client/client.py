@@ -6,6 +6,7 @@ import select
 import sys
 from math import ceil
 from tenacity import retry, stop_after_attempt, retry_if_exception_type
+import chardet
 
 client_addr = ('localhost', 9000)
 server_addr = sys.argv[1] if len(sys.argv) > 1 else ('localhost', 3434)
@@ -81,7 +82,7 @@ def parse_data_ack(datagram, params):
 
 @retry(stop=stop_after_attempt(max_retries), reraise=True)
 def send_start(dst_filename, total_size):
-    message = f"s | {start_seqno} | {dst_filename} | {total_size}".encode("ascii")
+    message = f"s | {start_seqno} | {dst_filename} | {total_size}".encode()
     client.sendto(message, server_addr)
     # response = client.recv(4096).decode('ascii')
     ready = select.select([client], [], [], retry_timeout)
@@ -90,7 +91,7 @@ def send_start(dst_filename, total_size):
         if not ready[0]:
             continue
 
-        data = client.recv(client_bufsize).decode("ascii")
+        data = client.recv(client_bufsize).decode()
         if not data:
             return None
 
@@ -100,7 +101,9 @@ def send_start(dst_filename, total_size):
 
 @retry(stop=stop_after_attempt(max_retries), reraise=True)
 def send_chunk(seq_no, data_bytes):
-    message = f"d | {seq_no} | {data_bytes.decode()}".encode("ascii")
+    message = f"d | {seq_no} | ".encode() + data_bytes
+    
+    # message = f"d | {seq_no} | {data_bytes}".encode()
     client.sendto(message, server_addr)
     ready = select.select([client], [], [], retry_timeout)
     
@@ -108,7 +111,7 @@ def send_chunk(seq_no, data_bytes):
         if not ready[0]:
             continue
 
-        data = client.recv(client_bufsize).decode("ascii")
+        data = client.recv(client_bufsize).decode()
         if not data:
             return None
         
@@ -119,8 +122,10 @@ def send_chunk(seq_no, data_bytes):
 
 def send_file(src_filename, dst_filename):
     # client.sendto(message, server_addr) 
+    
     try:
         f = open(src_filename, 'rb')
+        
     except FileNotFoundError:
         print("File is not found. Exiting.")
         return
@@ -162,7 +167,8 @@ def send_file(src_filename, dst_filename):
 
 
 
-src_filename = "Client/test_file.txt"
+# src_filename = "Client/test_file.txt"
+src_filename = "Client/photo.jpg"
 dst_filename = src_filename
 
 send_file(src_filename, dst_filename)

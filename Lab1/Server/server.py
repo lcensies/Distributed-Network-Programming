@@ -2,10 +2,13 @@ import random
 import socketserver
 import string
 import threading
+import traceback
 from math import ceil
 
 from pathvalidate import sanitize_filepath, sanitize_filename
 import redis
+
+debug = True
 
 server_address = ("127.0.0.1", 3434)
 server_secret = ''.join(random.choice(string.ascii_lowercase) for i in range(5))
@@ -21,37 +24,52 @@ session_storage = {}
 
 
 def parse_message(datagram):
-    splitted = str(datagram).split(" | ")
+    
     message = {}
 
-    if splitted[0] == "s":
-
+    if chr(datagram[0]) == "s":
+        
+        # Separate message on 3 groups maximum
+        splitted = datagram.split(b" | ", 3)
+        
         message["type"] = "start"
+        
+        seq_no = splitted[1].decode("ascii")
+        
+        if not (seq_no.isdigit() and int(seq_no) >= 0):
+            raise ValueError(f"Invalid sequence number {splitted[1]}")
 
-        if not (splitted[1].isdigit() and int(splitted[1]) >= 0):
-            raise ValueError("Invalid sequence number")
 
-        message["seq_no"] = int(splitted[1])
-
-        message["filename"] = sanitize_filename(splitted[2])
+        message["seq_no"] = int(seq_no)
+        
+        # In order to prevent directory traversing 
+        message["filename"] = sanitize_filename(splitted[2].decode("ascii"))
 
         if not splitted[3].isdigit():
-            raise ValueError("Invalid total size")
+            raise ValueError(f"Invalid format of total size {splitted[2]}. Expected integer.")
+
 
         message["total_size"] = int(splitted[3])
 
-    elif splitted[0] == "d":
+    elif chr(datagram[0]) == "d":
 
+        # Separate message on 2 groups maximum
+        splitted = datagram.split(b" | ", 2)
+        
         message["type"] = "data"
+        
+        seq_no = splitted[1].decode("ascii")
+        
+        if not (seq_no.isdigit() and int(seq_no) >= 0):
+            raise ValueError(f"Invalid sequence number {seq_no}")
 
-        if not splitted[1].isdigit():
-            raise ValueError("Invalid sequence number")
 
-        message["seq_no"] = int(splitted[1])
+        message["seq_no"] = int(seq_no)
 
         message["data_bytes"] = splitted[2]
     else:
         raise Exception('Unsupported message type')
+
 
     return message
 
@@ -82,12 +100,12 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         return session_storage[sid]
     
     def save_file(self, sid):
-        bytes = str.encode(''.join(session_storage[sid]["chunks"]))
+        bytes = b''.join(session_storage[sid]["chunks"])
     
         with open(session_storage[sid]["filename"], "wb") as f:
             f.write(bytes)
         
-        print(f"Saved file {session_storage[sid]['filename']}")     
+        print(f"Saved file {session_storage[sid]['filename']}")
     
     def get_sid(self):
         return self.client_address[0] + str(self.client_address[1]) + server_secret
@@ -107,6 +125,7 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
 
         if seq_no > session_storage[sid]["n_chunks"] + 1:
             raise Exception(f"Invalid sequence number. Expected [0, {session_storage[sid]['n_chunks'] + 1}]. Got: {seq_no}")
+            traceback.print_exc()
     
         session_storage[sid]["chunks"][seq_no - 1] = message["data_bytes"]
 
@@ -122,13 +141,15 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         
         # bytes = self.rfile.readline()
         bytes = self.rfile.read()
-        datagram = bytes.strip().decode("ascii")
+        datagram = bytes.strip()
         print(f"Datagram Recieved from client is: {datagram}")
 
         try:
             message = parse_message(datagram)
         except Exception as e:
             print(e)
+            if debug:
+                traceback.print_exc()
             return
 
         try:
@@ -138,6 +159,8 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
                 ret = self.handle_data(message, self.get_sid())
         except Exception as e:
             print(e)
+            if debug:
+                traceback.print_exc()
             return
 
         # print(datagram)
@@ -167,3 +190,7 @@ server.serve_forever()
 # TODO directory traversal avoidance
 
 # TODO some encoding for bytes?
+
+# TODO split only by fist 2 dashes
+
+# Split by first N ocurrences https://stackoverflow.com/questions/6903557/splitting-on-first-occurrence
