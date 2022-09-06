@@ -4,17 +4,58 @@ import os
 import socket
 import select
 import sys
+import traceback
 from math import ceil
-from tenacity import retry, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, retry_if_exception_type, retry_if_result, RetryError
 import chardet
 
+debug = True
+usage = f"Usage: python3 server_ip:port src_filename dst_filename"
+
+# client_addr = ('', 9000)
 client_addr = ('localhost', 9000)
-server_addr = sys.argv[1] if len(sys.argv) > 1 else ('localhost', 3434)
+
+if len(sys.argv) > 1:
+    server_addr = sys.argv[1].split(":")
+    server_addr = (server_addr[0], int(server_addr[1]))
+else:
+    server_addr = ('localhost', 3434)
+    # print(usage)
+    # exit()
+
+if len(sys.argv) > 2:
+    src_filename = sys.argv[2]
+else:
+    src_filename = "Client/Files/enum.txt"
+    # print(usage)
+    # exit()
+
+if len(sys.argv) > 3:
+    dst_filename = sys.argv[3]
+else:
+    dst_filename = "enum.txt"
+    # print(usage)
+    # exit()
+
+
+# server_addr = sys.argv[1].split(":")[0], int(sys.argv[1].split(":")[1]) if len(sys.argv) > 1 else ('localhost', 3434)
+# src_filename = sys.argv[2]
+# dst_filename = sys.argv[3] if len(sys.argv) > 4 else src_filename
+
+# src_filename = "Client/photo.jpg"
+# src_filename = "Client/enum.txt"
+
+# server-hostname:12300 \
+#     path/to/local/file.jpg \
+#     filename-on-server.jpg
 
 client_bufsize = 4096
 start_seqno = 0
 max_retries = 5
 retry_timeout = 500  # in seconds
+
+# script_dir = os.path.abspath(os.path.dirname(__file__))
+# files_dir = os.path.join(script_dir, "Files")
 
 client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 client.setblocking(0)
@@ -80,7 +121,7 @@ def parse_data_ack(datagram, params):
 # 
 #     return None
 
-@retry(stop=stop_after_attempt(max_retries), reraise=True)
+@retry(stop=stop_after_attempt(max_retries), retry=retry_if_result(lambda x: x == None), reraise=True)
 def send_start(dst_filename, total_size):
     message = f"s | {start_seqno} | {dst_filename} | {total_size}".encode()
     client.sendto(message, server_addr)
@@ -99,7 +140,7 @@ def send_start(dst_filename, total_size):
 
     return None
 
-@retry(stop=stop_after_attempt(max_retries), reraise=True)
+@retry(stop=stop_after_attempt(max_retries), retry=retry_if_result(lambda x: x == None), reraise=True)
 def send_chunk(seq_no, data_bytes):
     message = f"d | {seq_no} | ".encode() + data_bytes
     
@@ -127,7 +168,7 @@ def send_file(src_filename, dst_filename):
         f = open(src_filename, 'rb')
         
     except FileNotFoundError:
-        print("File is not found. Exiting.")
+        print(f"File {src_filename} is not found. Exiting.")
         return
     try:
         total_size = os.stat(src_filename).st_size
@@ -148,28 +189,23 @@ def send_file(src_filename, dst_filename):
             ack = send_chunk(seq_no, chunks[i])
             
     except Exception as e:
+        if type(e) == RetryError:
+            print(f"Exceeded maximum number of retries {max_retries}")
         print(e)
+        if debug:
+            traceback.print_exc()
             # client.sendto(message, server_addr)
             # # response = client.recv(4096).decode('ascii')
             # ready = select.select([client], [], [], retry_timeout)
 
-# while (l):
-#     conn.send(l)
-#     l = output.read(1024)
-# output.close()
-#         
-#     except Exception as e:
-#         print(e)
-#         return
-#     
-#     f.close()
-
-
-
-
 # src_filename = "Client/test_file.txt"
-src_filename = "Client/photo.jpg"
-dst_filename = src_filename
+# src_filename = "Client/photo.jpg"
+
+
+
+
+
+
 
 send_file(src_filename, dst_filename)
 
@@ -185,3 +221,13 @@ send_file(src_filename, dst_filename)
 # TODO if ack == None ack = send_start(dst_filename, total_size)
 
 # TODO wipe session 
+
+# TODO handle wrong chunk size
+
+# TODO handle session hijacking
+
+# TODO print bufsize selcted by the server
+
+# TODO print if seq_no failed to send data
+
+# TODO don't override old chunks and print message if duplicate was detected

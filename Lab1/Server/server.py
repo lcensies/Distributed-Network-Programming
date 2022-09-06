@@ -1,3 +1,4 @@
+import os
 import random
 import socketserver
 import string
@@ -10,12 +11,18 @@ import redis
 
 debug = True
 
+# server_address = ("", 3434)
 server_address = ("127.0.0.1", 3434)
 server_secret = ''.join(random.choice(string.ascii_lowercase) for i in range(5))
 
-recv_chunk_size = 32
-buf_size = recv_chunk_size * 2
+# recv_chunk_size = 32
+# buf_size = recv_chunk_size * 2
 
+buf_size = 1024
+
+
+script_dir = os.path.abspath(os.path.dirname(__file__))
+files_dir = os.path.join(script_dir, "Files")
 # r = redis.Redis(host='localhost', port=9999)
 # r.mset({"Croatia": "Zagreb", "Bahamas": "Nassau"})
 # print(r.get("Bahamas"))
@@ -63,9 +70,8 @@ def parse_message(datagram):
         if not (seq_no.isdigit() and int(seq_no) >= 0):
             raise ValueError(f"Invalid sequence number {seq_no}")
 
-
         message["seq_no"] = int(seq_no)
-
+        
         message["data_bytes"] = splitted[2]
     else:
         raise Exception('Unsupported message type')
@@ -101,8 +107,10 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
     
     def save_file(self, sid):
         bytes = b''.join(session_storage[sid]["chunks"])
-    
-        with open(session_storage[sid]["filename"], "wb") as f:
+        
+        filepath = os.path.join(files_dir, session_storage[sid]["filename"])
+        
+        with open(filepath, "wb") as f:
             f.write(bytes)
         
         print(f"Saved file {session_storage[sid]['filename']}")
@@ -113,9 +121,15 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
     def handle_start(self, message, sid):
         session = self.init_session(message)
         session_storage[sid] = session
-        self.wfile.write(f'a | {session["seq_no"] + 1} | {buf_size}'.encode())
 
         print(f'Received start message from {self.client_address}: {message}')
+        
+        message = f'a | {session["seq_no"] + 1} | {buf_size}'
+        
+        self.wfile.write(message.encode())
+        
+        print(f'Sent start ack message {message}')
+        
         
     def handle_data(self, message, sid):
         if sid not in session_storage:
@@ -123,13 +137,17 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
 
         seq_no = message["seq_no"]
 
-        if seq_no > session_storage[sid]["n_chunks"] + 1:
-            raise Exception(f"Invalid sequence number. Expected [0, {session_storage[sid]['n_chunks'] + 1}]. Got: {seq_no}")
-            traceback.print_exc()
-    
-        session_storage[sid]["chunks"][seq_no - 1] = message["data_bytes"]
+        if seq_no not in range(0, session_storage[sid]['n_chunks'] + 1):
+            raise Exception(f"Invalid sequence number. Expected [0, {session_storage[sid]['n_chunks']}]. Got: {seq_no}")
+        
 
-        self.wfile.write(f'a | {seq_no + 1}'.encode())
+        if seq_no > 0 and session_storage[sid]["chunks"][seq_no - 1] is not None:
+            raise Exception(f"Duplicate chunk with sequence number {seq_no} received") 
+        session_storage[sid]["chunks"][seq_no - 1] = message["data_bytes"]
+        
+        message = f'a | {seq_no + 1}'
+        self.wfile.write(message.encode())
+        print(f"Sent data ack message {message}")
         
         if seq_no == session_storage[sid]["n_chunks"]:
             self.save_file(sid)
@@ -140,8 +158,11 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         print("Recieved one request from {}".format(self.client_address))
         
         # bytes = self.rfile.readline()
+        
+        # If client will send more data than buf_size, server would read only buf_size
         bytes = self.rfile.read()
-        datagram = bytes.strip()
+        datagram = bytes
+        # datagram = bytes.strip()
         print(f"Datagram Recieved from client is: {datagram}")
 
         try:
@@ -174,6 +195,9 @@ server = socketserver.ThreadingUDPServer(server_address, MyUDPRequestHandler)
 print(f"Server is listening on {server_address}")
 server.serve_forever()
 
+
+
+
 # no session, start -> initial messagee
 # no session, data -> malicious client, ignore
 # session, data -> filetransfer
@@ -192,5 +216,11 @@ server.serve_forever()
 # TODO some encoding for bytes?
 
 # TODO split only by fist 2 dashes
+
+# TODO read only specified size
+
+# TODO at last seq_no check if all data is present
+
+# TODO fix duplicates correct handling
 
 # Split by first N ocurrences https://stackoverflow.com/questions/6903557/splitting-on-first-occurrence
