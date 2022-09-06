@@ -7,9 +7,9 @@ import traceback
 from math import ceil
 
 from pathvalidate import sanitize_filepath, sanitize_filename
-import redis
 
 debug = True
+permanent_sessions = True
 
 # server_address = ("", 3434)
 server_address = ("127.0.0.1", 3434)
@@ -85,13 +85,17 @@ def parse_message(datagram):
 class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
     
     def remove_session(self, sid):
-        print(f"Client with sid {sid} is inactive for 3 seconds. Removing session.")
+        if permanent_sessions:
+            return
+        if sid not in session_storage:
+            return 
+        print(f"Client with sid {sid} is inactive for {session_storage[sid]['timer'].interval} seconds. Removing session.")
         return session_storage.pop(sid, None)
         
         # session_storage[sid] = None
     
     def restore_session(self, sid):
-
+        
         if sid in session_storage:
             return session_storage[sid]
         else:
@@ -153,10 +157,10 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
             raise Exception(f"Invalid sequence number. Expected [0, {session_storage[sid]['n_chunks']}]. Got: {seq_no}")
         
 
-        if seq_no > 0 and session_storage[sid]["chunks"][seq_no - 1] is not None:
-            raise Exception(f"Duplicate chunk with sequence number {seq_no} is received")
-        
-        session_storage[sid]["chunks"][seq_no - 1] = message["data_bytes"]
+        if seq_no > 0 and session_storage[sid]["chunks"][seq_no - 1] is None:
+            session_storage[sid]["chunks"][seq_no - 1] = message["data_bytes"]
+        else:
+            print(f"Duplicate chunk with sequence number {seq_no} is received")
         
         message = f'a | {seq_no + 1}'
         self.wfile.write(message.encode())
@@ -182,7 +186,8 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         datagram = bytes
         # datagram = bytes.strip()
         print(f"Datagram Recieved from client is: {datagram}")
-
+        if "127" in str(datagram):
+            hueta = 4
         try:
             message = parse_message(datagram)
         except Exception as e:
@@ -200,6 +205,13 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
             print(e)
             if debug:
                 traceback.print_exc()
+            
+            if self.get_sid() not in session_storage:
+                return
+            
+            session_storage[self.get_sid()]["timer"] = threading.Timer(3.0, self.remove_session, args=[self.get_sid()])
+            session_storage[self.get_sid()]["timer"].start()
+
             return
 
         # print(datagram)
@@ -241,4 +253,5 @@ server.serve_forever()
 
 # TODO fix duplicates correct handling
 
+# TODO avoid resaving file if last chunk duplicate was received
 # Split by first N ocurrences https://stackoverflow.com/questions/6903557/splitting-on-first-occurrence

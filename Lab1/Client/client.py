@@ -7,7 +7,6 @@ import sys
 import traceback
 from math import ceil
 from tenacity import retry, stop_after_attempt, retry_if_exception_type, retry_if_result, RetryError
-import chardet
 
 debug = True
 usage = f"Usage: python3 server_ip:port src_filename dst_filename"
@@ -187,6 +186,7 @@ def send_file(src_filename, dst_filename):
             # message = f"d | {seq_no} | {chunks[i]}"
             # ack = send_message(message, parse_data_ack, params={"seq_no": seq_no})
             ack = send_chunk(seq_no, chunks[i])
+        print(f"Successfully sent file {src_filename} to the server")
             
     except Exception as e:
         if type(e) == RetryError:
