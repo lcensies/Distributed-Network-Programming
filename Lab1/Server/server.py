@@ -83,7 +83,13 @@ def parse_message(datagram):
 # filename | total_size
 
 class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
-
+    
+    def remove_session(self, sid):
+        print(f"Client with sid {sid} is inactive for 3 seconds. Removing session.")
+        return session_storage.pop(sid, None)
+        
+        # session_storage[sid] = None
+    
     def restore_session(self, sid):
 
         if sid in session_storage:
@@ -128,13 +134,19 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         
         self.wfile.write(message.encode())
         
+        # Remove session if client is inactive for 3 seconds
+        session_storage[sid]["timer"] = threading.Timer(3.0, self.remove_session, args=[sid])
+        session_storage[sid]["timer"].start()
+        
         print(f'Sent start ack message {message}')
         
         
     def handle_data(self, message, sid):
         if sid not in session_storage:
-            raise Exception("Client is sending data message without preceding start")
-
+            raise Exception("Data message for inexistent sid was sent.")
+        
+        session_storage[sid]["timer"].cancel()
+        
         seq_no = message["seq_no"]
 
         if seq_no not in range(0, session_storage[sid]['n_chunks'] + 1):
@@ -142,7 +154,8 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         
 
         if seq_no > 0 and session_storage[sid]["chunks"][seq_no - 1] is not None:
-            raise Exception(f"Duplicate chunk with sequence number {seq_no} received") 
+            raise Exception(f"Duplicate chunk with sequence number {seq_no} is received")
+        
         session_storage[sid]["chunks"][seq_no - 1] = message["data_bytes"]
         
         message = f'a | {seq_no + 1}'
@@ -151,8 +164,13 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         
         if seq_no == session_storage[sid]["n_chunks"]:
             self.save_file(sid)
-        
-        
+            session_storage[sid]["timer"] = threading.Timer(1.0, self.remove_session, args=[sid])
+            session_storage[sid]["timer"].start()
+        else:
+            session_storage[sid]["timer"] = threading.Timer(3.0, self.remove_session, args=[sid])
+            session_storage[sid]["timer"].start()
+            
+
     def handle(self):
 
         print("Recieved one request from {}".format(self.client_address))
