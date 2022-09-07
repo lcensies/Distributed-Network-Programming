@@ -107,10 +107,14 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
 
         session_storage[sid] = {
             "seq_no": message["seq_no"],
+            'start_seqno': message["seq_no"],
+            # "last_seqno": message["seq_no"] + ceil(int(message["total_size"]) / buf_size),
             "filename": message["filename"],
+            "bytes_received": 0,
             "total_size": message["total_size"],
             "n_chunks":  ceil(int(message["total_size"]) / buf_size),
-            "chunks": [None] * ceil(int(message["total_size"]) / buf_size)
+            "chunks": []
+            # "chunks": [None] * ceil(int(message["total_size"]) / buf_size)
         }
 
         return session_storage[sid]
@@ -153,20 +157,29 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         
         seq_no = message["seq_no"]
 
-        if seq_no not in range(0, session_storage[sid]['n_chunks'] + 1):
-            raise Exception(f"Invalid sequence number. Expected [0, {session_storage[sid]['n_chunks']}]. Got: {seq_no}")
+        start_seqno = session_storage[sid]['start_seqno']
         
+        if seq_no < start_seqno:
+            raise Exception(f"Invalid sequence number {seq_no}")
+        
+        chunk_ind = seq_no - session_storage[sid]["start_seqno"] - 1
+        # if seq_no > 0 and session_storage[sid]["chunks"][chunk_ind] is None:
 
-        if seq_no > 0 and session_storage[sid]["chunks"][seq_no - 1] is None:
-            session_storage[sid]["chunks"][seq_no - 1] = message["data_bytes"]
+        chunks_received = len(session_storage[sid]["chunks"])
+        
+        if chunks_received == chunk_ind:
+            # session_storage[sid]["chunks"][chunk_ind] = message["data_bytes"]
+            session_storage[sid]["chunks"].append(message["data_bytes"])
+            session_storage[sid]["bytes_received"] += len(message["data_bytes"])
         else:
             print(f"Duplicate chunk with sequence number {seq_no} is received")
         
         message = f'a | {seq_no + 1}'
         self.wfile.write(message.encode())
         print(f"Sent data ack message {message}")
-        
-        if seq_no == session_storage[sid]["n_chunks"]:
+
+        if session_storage[sid]["bytes_received"] == session_storage[sid]["total_size"]:
+        # if seq_no == session_storage[sid]["last_seqno"]:
             self.save_file(sid)
             session_storage[sid]["timer"] = threading.Timer(1.0, self.remove_session, args=[sid])
             session_storage[sid]["timer"].start()
@@ -254,4 +267,10 @@ server.serve_forever()
 # TODO fix duplicates correct handling
 
 # TODO avoid resaving file if last chunk duplicate was received
+
+# TODO handle if sid not in dict
 # Split by first N ocurrences https://stackoverflow.com/questions/6903557/splitting-on-first-occurrence
+# Last - 894 bytes
+
+
+# Problem: client sends 1024 bytes in total, not only for message.
