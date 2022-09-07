@@ -112,7 +112,7 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
             "filename": message["filename"],
             "bytes_received": 0,
             "total_size": message["total_size"],
-            "n_chunks":  ceil(int(message["total_size"]) / buf_size),
+            # "n_chunks":  ceil(int(message["total_size"]) / buf_size),
             "chunks": []
             # "chunks": [None] * ceil(int(message["total_size"]) / buf_size)
         }
@@ -159,9 +159,12 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
 
         start_seqno = session_storage[sid]['start_seqno']
         
-        if seq_no < start_seqno:
+        if seq_no <= start_seqno:
             raise Exception(f"Invalid sequence number {seq_no}")
         
+        session_storage[sid]["seq_no"] = seq_no
+
+        # chunk_ind = seq_no - session_storage[sid]["start_seqno"] - 1
         chunk_ind = seq_no - session_storage[sid]["start_seqno"] - 1
         # if seq_no > 0 and session_storage[sid]["chunks"][chunk_ind] is None:
 
@@ -177,13 +180,16 @@ class MyUDPRequestHandler(socketserver.DatagramRequestHandler):
         message = f'a | {seq_no + 1}'
         self.wfile.write(message.encode())
         print(f"Sent data ack message {message}")
-
+        
+        if seq_no == 120:
+            watafak = 3
+        
         if session_storage[sid]["bytes_received"] == session_storage[sid]["total_size"]:
         # if seq_no == session_storage[sid]["last_seqno"]:
             self.save_file(sid)
             session_storage[sid]["timer"] = threading.Timer(1.0, self.remove_session, args=[sid])
             session_storage[sid]["timer"].start()
-        else:
+        elif not permanent_sessions:
             session_storage[sid]["timer"] = threading.Timer(3.0, self.remove_session, args=[sid])
             session_storage[sid]["timer"].start()
             
@@ -269,6 +275,11 @@ server.serve_forever()
 # TODO avoid resaving file if last chunk duplicate was received
 
 # TODO handle if sid not in dict
+
+# TODO save files in server dir
+
+# TODO fix first chunk indexing
+
 # Split by first N ocurrences https://stackoverflow.com/questions/6903557/splitting-on-first-occurrence
 # Last - 894 bytes
 

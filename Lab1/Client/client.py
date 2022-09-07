@@ -14,6 +14,12 @@ usage = f"Usage: python3 server_ip:port src_filename dst_filename"
 # client_addr = ('', 9000)
 client_addr = ('localhost', 9000)
 
+client_bufsize = 4096
+start_seqno = 0
+start_seqno = 0
+max_retries = 5
+retry_timeout = 500  # in seconds
+
 if len(sys.argv) > 1:
     server_addr = sys.argv[1].split(":")
     server_addr = (server_addr[0], int(server_addr[1]))
@@ -48,10 +54,6 @@ else:
 #     path/to/local/file.jpg \
 #     filename-on-server.jpg
 
-client_bufsize = 4096
-start_seqno = 0
-max_retries = 5
-retry_timeout = 500  # in seconds
 
 # script_dir = os.path.abspath(os.path.dirname(__file__))
 # files_dir = os.path.join(script_dir, "Files")
@@ -63,7 +65,7 @@ client.bind(client_addr)
 class InvalidSeqnoException(Exception):
     pass
 
-def parse_init_ack(datagram):
+def parse_init_ack(datagram, params=None):
     splitted = datagram.split(" | ")
 
     if not len(splitted) == 3:
@@ -103,61 +105,61 @@ def parse_data_ack(datagram, params):
         "next_seqno": next_seqno
     }
 
-# @retry(stop=stop_after_attempt(max_retries), retry=retry_if_exception_type())
-# def send_request(message, callback, params=None):
+@retry(stop=stop_after_attempt(max_retries), retry=retry_if_result(lambda x: x == None), reraise=True)
+def send_message(message, callback, params=None):
+    client.sendto(message, server_addr)
+    ready = select.select([client], [], [], retry_timeout)
+
+    for i in range(max_retries):
+        if not ready[0]:
+            continue
+
+        data = client.recv(client_bufsize).decode("ascii")
+        if not data:
+            return None
+
+        return callback(data, params)
+
+    return None
+
+# @retry(stop=stop_after_attempt(max_retries), retry=retry_if_result(lambda x: x == None), reraise=True)
+# def send_start(dst_filename, total_size):
+#     message = f"s | {start_seqno} | {dst_filename} | {total_size}".encode()
 #     client.sendto(message, server_addr)
+#     # response = client.recv(4096).decode('ascii')
 #     ready = select.select([client], [], [], retry_timeout)
 # 
 #     for i in range(max_retries):
 #         if not ready[0]:
 #             continue
 # 
-#         data = client.recv(client_bufsize).decode("ascii")
+#         data = client.recv(client_bufsize).decode()
 #         if not data:
 #             return None
 # 
-#         return callback(data, params)
+#         return parse_init_ack(data)
 # 
 #     return None
-
-@retry(stop=stop_after_attempt(max_retries), retry=retry_if_result(lambda x: x == None), reraise=True)
-def send_start(dst_filename, total_size):
-    message = f"s | {start_seqno} | {dst_filename} | {total_size}".encode()
-    client.sendto(message, server_addr)
-    # response = client.recv(4096).decode('ascii')
-    ready = select.select([client], [], [], retry_timeout)
-
-    for i in range(max_retries):
-        if not ready[0]:
-            continue
-
-        data = client.recv(client_bufsize).decode()
-        if not data:
-            return None
-
-        return parse_init_ack(data)
-
-    return None
-
-@retry(stop=stop_after_attempt(max_retries), retry=retry_if_result(lambda x: x == None), reraise=True)
-def send_chunk(seq_no, data_bytes):
-    message = f"d | {seq_no} | ".encode() + data_bytes
-    
-    # message = f"d | {seq_no} | {data_bytes}".encode()
-    client.sendto(message, server_addr)
-    ready = select.select([client], [], [], retry_timeout)
-    
-    for i in range(max_retries):
-        if not ready[0]:
-            continue
-
-        data = client.recv(client_bufsize).decode()
-        if not data:
-            return None
-        
-        return parse_data_ack(data, params={"seq_no": seq_no})
-    
-    return None
+# 
+# @retry(stop=stop_after_attempt(max_retries), retry=retry_if_result(lambda x: x == None), reraise=True)
+# def send_chunk(seq_no, data_bytes):
+#     message = f"d | {seq_no} | ".encode() + data_bytes
+#     
+#     # message = f"d | {seq_no} | {data_bytes}".encode()
+#     client.sendto(message, server_addr)
+#     ready = select.select([client], [], [], retry_timeout)
+#     
+#     for i in range(max_retries):
+#         if not ready[0]:
+#             continue
+# 
+#         data = client.recv(client_bufsize).decode()
+#         if not data:
+#             return None
+#         
+#         return parse_data_ack(data, params={"seq_no": seq_no})
+#     
+#     return None
 
 
 def send_file(src_filename, dst_filename):
@@ -172,21 +174,38 @@ def send_file(src_filename, dst_filename):
     try:
         total_size = os.stat(src_filename).st_size
         seq_no = start_seqno
-        # message = f"s | {seq_no} | {dst_filename} | {total_size}".encode("ascii")
-        # ack = send_message(message, parse_init_ack)
-        ack = send_start(dst_filename, total_size)
+        message = f"s | {seq_no} | {dst_filename} | {total_size}".encode("ascii")
+        ack = send_message(message, parse_init_ack)
+        seq_no = ack["next_seqno"]
+        # ack = send_start(dst_filename, total_size)
         # next_seqno = ack["next_seqno"]
         server_bufsize = ack["buf_size"]
+
+        message_header = f"d | {seq_no} | "
+        message_data_size = server_bufsize - len(message_header)
+        # message_data = f.read(message_data_size)
         
-        chunks = [None] * ceil(total_size / server_bufsize) 
         
-        for i in range(len(chunks)):
-            chunks[i] = f.read(server_bufsize)
+        # chunks = [None] * ceil(total_size / server_bufsize)
+        
+        while (data := f.read(message_data_size)):
+            message = message_header.encode("ascii") + data
+            ack = send_message(message, parse_data_ack, params={"seq_no": seq_no})
+            
             seq_no = ack["next_seqno"]
+            message_header = f"d | {seq_no} | "
+            message_data_size = server_bufsize - len(message_header)
+        # Do stuff with byte.
+        
+        # for i in range(len(chunks)):
+        #     chunks[i] = f.read(server_bufsize)
+        #     seq_no = ack["next_seqno"]
             # message = f"d | {seq_no} | {chunks[i]}"
             # ack = send_message(message, parse_data_ack, params={"seq_no": seq_no})
-            ack = send_chunk(seq_no, chunks[i])
-        print(f"Successfully sent file {src_filename} to the server")
+            # ack = send_chunk(seq_no, chunks[i])
+        
+        if ack is not None:
+            print(f"Successfully sent file {src_filename} to the server")
             
     except Exception as e:
         if type(e) == RetryError:
@@ -231,3 +250,7 @@ send_file(src_filename, dst_filename)
 # TODO print if seq_no failed to send data
 
 # TODO don't override old chunks and print message if duplicate was detected
+
+# TODO send only serv_buf bytes
+
+# TODO error if server was not found
