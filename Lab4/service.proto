@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+
+message TextMessage {
+  string message = 1;
+}
+
+message SplitTextRequest {
+  string message = 1;
+  string delim = 2;
+}
+
+message IntegerMessage {
+  int64 num = 1;
+}
+
+
+message ReverseTextMessageResponse {
+  string message = 1;
+}
+
+message SplitTextMessageResponse {
+  int32 n_parts = 1;
+  repeated string parts = 2;
+}
+
+service Service {
+  rpc ReverseText(TextMessage) returns (ReverseTextMessageResponse);
+  rpc SplitText(SplitTextRequest) returns (SplitTextMessageResponse);
+  rpc GetIsPrimeStream(stream IntegerMessage) returns (stream TextMessage) {}
+}
