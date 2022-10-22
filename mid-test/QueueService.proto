@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+message TextMessage {
+  string message = 1;
+}
+
+message Response {
+  int32 status_code = 1;
+  string text = 2;
+}
+
+service QueueService {
+  rpc Put(TextMessage) returns (Response);
+  rpc Pick(TextMessage) returns (Response);
+  rpc Pop(TextMessage) returns (Response);
+  rpc Size(TextMessage) returns (Response);
+}
