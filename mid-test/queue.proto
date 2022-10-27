@@ -9,9 +9,9 @@ message Response {
   string text = 2;
 }
 
-service QueueService {
+service NewQueueService {
   rpc Put(TextMessage) returns (Response);
-  rpc Pick(TextMessage) returns (Response);
+  rpc Peek(TextMessage) returns (Response);
   rpc Pop(TextMessage) returns (Response);
   rpc Size(TextMessage) returns (Response);
 }
