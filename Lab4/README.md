@@ -12,3 +12,4 @@ python3 -m grpc_tools.protoc SimpleService.proto --proto_path=. --python_out=. -
 - SimpleService_pb2_grpc.py
   - Stub for request handler
   - Stub for client
+

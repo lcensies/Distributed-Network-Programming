@@ -1,0 +1,8 @@
+125603
+INFO:root:Node 1: The server starts at 127.0.0.1:50001
+INFO:root:Node 1: I am the follower. Term 0
+DEBUG:root:Entered follower context
+DEBUG:root:Exited follower context
+INFO:root:The leader is dead
+INFO:root:I am a candidate. Term 1
+DEBUG:root:Node 1: unable to connect to node 0

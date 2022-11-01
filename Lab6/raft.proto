@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+message TextMessage {
+  string text = 1;
+}
+
+message RaftAddress {
+  int32 id = 1;
+  string address = 2;
+}
+
+message RaftRequest {
+  int32 term = 1;
+  int32 nodeId = 2;
+}
+
+message RaftResponse {
+  int32 term = 1;
+  bool success = 2;
+}
+
+service RaftServer {
+  rpc AppendEntries(RaftRequest) returns (RaftResponse);
+  rpc GetLeader(TextMessage) returns (RaftAddress);
+  rpc Suspend(TextMessage) returns (TextMessage);
+  rpc RequestVote(RaftRequest) returns (RaftResponse);
+}
