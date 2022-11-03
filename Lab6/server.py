@@ -58,7 +58,9 @@ class RaftRequestHandler(pb2_grpc.RaftServerServicer):
             
         if request.term == self.node.term:
             if self.node.leader_id == request.nodeId:
-                return pb2.RaftResponse(term=request.term, success=True)
+                self.node.election_timer.cancel()
+                self.node.election_timer = threading.Timer(self.node.election_timeout, self.node.become_candidate, [self.node.term])
+            return pb2.RaftResponse(term=request.term, success=True)
             return pb2.RaftResponse(term=request.term, success=False)
         elif request.term > self.node.term:
             self.node.become_follower(request.term, request.nodeId)
