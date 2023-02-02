@@ -5,6 +5,9 @@ import sys
 from contextlib import closing
 from time import sleep
 
+# P.S. this is working not as intended and was written napohui without additional checks
+
+
 if len(sys.argv) > 2:
     serv_addr = sys.argv[1].split(":")
     serv_addr = (serv_addr[0], int(serv_addr[1]))

@@ -6,6 +6,8 @@ import socket
 from threading import Thread, Lock
 import hashlib
 
+# P.S. this is working not as intended and was written napohui without additional checks
+
 if len(sys.argv) > 1:
     serv_port = int(sys.argv[1])
 else:
@@ -30,7 +32,6 @@ def start_processing(i_thread, client):
             with session_storage_mutex:
                 if str(addr) in session_storage:
                     del session_storage[str(addr)]
-            
             return
         
         name = data.strip().decode("utf-8")
@@ -42,14 +43,14 @@ def start_processing(i_thread, client):
         ans = str(print_sessions(name))
         conn.sendall(ans.encode("utf-8"))
 
-# def start_worker(i_thread):
-#     while True:
-#         try:
-#             client = q.get(block=True)
-#             start_processing(i_thread, client)
-#         except Exception as e:
-#             continue
-#     print(f"Stopping thread {i_thread}")
+def start_worker(i_thread):
+    while True:
+        try:
+            client = q.get(block=True)
+            start_processing(i_thread, client)
+        except Exception as e:
+            continue
+    print(f"Stopping thread {i_thread}")
 
 def handle_stop_signals(signum, frame):
     print("Server is stopped.")
@@ -58,8 +59,8 @@ def handle_stop_signals(signum, frame):
 n_threads = 30
 q = Queue()
 
-# threads = [Thread(target=start_worker, args=(i,), daemon=True) for i in range(n_threads)]
-# [t.start() for t in threads]
+threads = [Thread(target=start_worker, args=(i,), daemon=True) for i in range(n_threads)]
+[t.start() for t in threads]
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind(serv_addr)

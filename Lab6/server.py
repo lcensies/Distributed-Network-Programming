@@ -1,34 +1,35 @@
 import asyncio
+import os
 import random
 import sys
 import threading
 from enum import Enum
+from time import sleep
 
 import raft_pb2_grpc as pb2_grpc
 import raft_pb2 as pb2
 import logging
-import traceback
 import grpc
 from concurrent import futures
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+log_level = logging.INFO
+logging.basicConfig(stream=sys.stdout, level=log_level, format="%(message)s")
 
 CONFIG_PATH = "config.conf"
 
-# HEARTBEAT_INTERVAL = 0.05
-# ELECTION_TIMEOUT_MIN = 0.15
-# ELECTION_TIMEOUT_MAX = 0.3
+HEARTBEAT_INTERVAL = 0.05
+ELECTION_TIMEOUT_MIN = 0.15
+ELECTION_TIMEOUT_MAX = 0.3
 
-
-HEARTBEAT_INTERVAL = 0.1
-ELECTION_TIMEOUT_MIN = 1
-ELECTION_TIMEOUT_MAX = 1.5
-
+# HEARTBEAT_INTERVAL = 0.1
+# ELECTION_TIMEOUT_MIN = 1
+# ELECTION_TIMEOUT_MAX = 1.5
 
 class RaftState(Enum):
     Follower = 0
     Candidate = 1
     Leader = 2
+    Sleeping = 3
 
 def read_conf(path):
     with open(path, 'r') as f:
@@ -51,16 +52,14 @@ class RaftRequestHandler(pb2_grpc.RaftServerServicer):
         self.node = node
     
     def AppendEntries(self, request, context):
-        # logging.debug(f"{self.prefix} Entered appending context")
-        # with self.node.term_mutex:
         if self.node.leader_id is None:
             self.node.leader_id = request.nodeId
-            
+            self.node.reset_election_timer()
+            return pb2.RaftResponse(term=request.term, success=True)
         if request.term == self.node.term:
             if self.node.leader_id == request.nodeId:
-                self.node.election_timer.cancel()
-                self.node.election_timer = threading.Timer(self.node.election_timeout, self.node.become_candidate, [self.node.term])
-            return pb2.RaftResponse(term=request.term, success=True)
+                self.node.reset_election_timer()
+                return pb2.RaftResponse(term=request.term, success=True)
             return pb2.RaftResponse(term=request.term, success=False)
         elif request.term > self.node.term:
             self.node.become_follower(request.term, request.nodeId)
@@ -70,41 +69,48 @@ class RaftRequestHandler(pb2_grpc.RaftServerServicer):
         # logging.debug(f"{self.prefix} Exited appending context")
 
     def RequestVote(self, request, context):
-        logging.info(f"{self.node.prefix} ({self.node.state}) - {request.nodeId} tried to RequestVote")
+        logging.debug(f"{self.node.prefix}({self.node.state}) - {request.nodeId} tried to RequestVote")
         if request.nodeId == self.node.id:
-            logging.info(f"{self.node.prefix} Voted for node {request.nodeId}")
+            logging.info(f"{self.node.prefix}Voted for node {request.nodeId}")
             return pb2.RaftResponse(term=request.term, success=True)
         elif self.node.leader_id is None and self.node.term <= request.term:
             self.node.become_follower(request.term, request.nodeId)
-            logging.info(f"{self.node.prefix} Voted for node {request.nodeId}")
+            logging.info(f"{self.node.prefix}Voted for node {request.nodeId}")
             return pb2.RaftResponse(term=request.term, success=True)
         elif self.node.term < request.term:
             self.node.become_follower(request.term, request.nodeId)
-            logging.info(f"{self.node.prefix} Voted for node {request.nodeId}")
+            logging.info(f"{self.node.prefix}Voted for node {request.nodeId}")
             return pb2.RaftResponse(term=request.term, success=True)
         else:
             return pb2.RaftResponse(term=self.node.term, success=False)
-
-
-    def GetLeader(self, request, context):
-        res = get_node_addr(self.node.nodes, self.node.leader_id)
+    def GetLeader(self, request, context):        
+        res = [x for x in self.node.nodes if x.id == self.node.leader_id][0]
         if res is None:
             res = pb2.RaftAddress(id=-1, address="")
         return res
-        
+    def Suspend(self, request, context):
+        self.node.sleep_timeout = float(request.text)
+        logging.info(f"Sleeping for {self.node.sleep_timeout} seconds")
 
+        try:
+            return pb2.TextMessage(text="")
+        finally:
+            self.node.suspend()
+    
 class RaftNode:
-    def __init__(self, nodes, id, addr):
+    def __init__(self, nodes, id):
         self.nodes = nodes
-        self.addr, self.id = addr, id
+        self.addr, self.id = get_node_addr(nodes, id), id
         
         self.term, self.term_mutex = 0, threading.Lock()
         self.state, self.state_mutex = None, threading.Lock()
         self.leader_id, self.leader_id_mutex = None, threading.Lock()
         self.raft_entry = [x for x in self.nodes if x.id == id][0]
-
-        self.prefix = f"Node {self.id}:"
-        
+        self.sleep_timeout = None
+        if log_level == logging.DEBUG:
+            self.prefix = f"Node {self.id}:"
+        else:
+            self.prefix = ""
         self.connections = {}
         
         self.init_connections()
@@ -117,22 +123,36 @@ class RaftNode:
         self.election_timer_mutex = threading.Lock()
         self.heartbeat_timer_mutex = threading.Lock()
         
-        self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-        
-        pb2_grpc.add_RaftServerServicer_to_server(RaftRequestHandler(self), self.server)
-        
-        self.server.add_insecure_port(self.addr)
-        
-        logging.info(f"{self.prefix} The server starts at {self.addr}")
-        self.server.start()
-
-        self.become_follower(self.term, self.leader_id)
+        self.server = None
+        self.start_server()
 
         try:
-            self.server.wait_for_termination()
+            while True:
+                self.server.wait_for_termination()
+                if self.sleep_timeout is not None:
+                    sleep(self.sleep_timeout)
+                    self.sleep_timeout = None
+                    self.start_server()
         except KeyboardInterrupt:
-            logging.info(f"{self.prefix} Terminating the node")
-
+            logging.info(f"{self.prefix}Terminating the node")
+            os._exit(0)
+    
+    def reset_election_timer(self):
+        self.election_timer.cancel()
+        self.election_timer = threading.Timer(self.election_timeout, self.become_candidate, [self.term])
+        self.election_timer.start()
+    def suspend(self):
+        self.election_timer.cancel()
+        self.heartbeat_timer.cancel()
+        self.server.stop(grace=None)
+    def start_server(self):
+        logging.info(f"{self.prefix}The server starts at {self.addr}")
+        
+        self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        pb2_grpc.add_RaftServerServicer_to_server(RaftRequestHandler(self), self.server)    
+        self.server.add_insecure_port(self.addr)
+        self.server.start()
+        self.become_follower(self.term, self.leader_id)
     def become_candidate(self, term):
         self.term_mutex.acquire()
         
@@ -144,12 +164,11 @@ class RaftNode:
         self.election_timer.cancel()
         self.heartbeat_timer.cancel()
         self.state = RaftState.Candidate
-        # with self.term_mutex:
         
         self.term += 1
         logging.info(f"I am a candidate. Term {self.term}")
         n_votes, requests_failed = 0, 0
-
+        
         for node in self.nodes:
             stub = self.connections[node.id]["stub"]
             req = pb2.RaftRequest(term=self.term, nodeId=self.id)
@@ -158,57 +177,52 @@ class RaftNode:
                 if res.term > self.term:
                     if self.term_mutex.locked():
                         self.term_mutex.release()
+                    self.term = res.term
                     self.become_follower(res.term, res.nodeId)
-                    logging.debug(f"{self.prefix} received term number {res.term} from node {node.id} during election")
+                    logging.debug(f"{self.prefix}received term number {res.term} from node {node.id} during election")
                     return
                 if res.success == True:
                     n_votes += 1
-                    logging.debug(f"{self.prefix} node {node.id} voted for me!")
+                    logging.debug(f"{self.prefix}node {node.id} voted for me!")
 
             except Exception as e:
                         requests_failed += 1
-                        # logging.debug(traceback.format_exception())
-                        logging.debug(f"{self.prefix} unable to connect to node {node.id}")
+                        logging.debug(f"{self.prefix}unable to connect to node {node.id}")
                         continue
         
         logging.info(f"Votes received. Total: {n_votes}")
         
-        if n_votes > len(self.nodes) // 2:
-            logging.debug(f"{self.prefix} About to become leader")
+        median = int(round(len(self.nodes) / 2))
+        
+        if n_votes > median:
+            logging.debug(f"{self.prefix}About to become leader")
             if self.term_mutex.locked():
                 self.term_mutex.release()
             self.become_leader(self.term)
-        elif n_votes < int(round(len(self.nodes) / 2)):
-            logging.debug(f"{self.prefix} Not enough votes. Becoming follower")
+            return
+        elif n_votes < median:
+            logging.debug(f"{self.prefix}Not enough votes. Becoming follower")
             if self.term_mutex.locked():
                 self.term_mutex.release()
-            self.become_follower(res.term)
+            self.become_follower(self.term)
+            return
         else:
-            logging.debug(f"{self.prefix} Reinitializing election")
-            # logging.debug(f"{self.prefix} Entered election mutex context")
-    
-            # with self vcfdxszt.election_timer_mutex:
-            
+            logging.debug(f"{self.prefix}Reinitializing election")
+
             self.election_timeout = random.uniform(ELECTION_TIMEOUT_MIN, ELECTION_TIMEOUT_MAX)
             self.election_timer = threading.Timer(self.election_timeout, self.become_candidate, [self.term])
-            self.term_mutex.release()
+            if self.term_mutex.locked():
+                self.term_mutex.release()
             self.election_timer.start()
-            # logging.debug(f"{self.prefix}: Exited election mutex context")
-            
     def become_leader(self, term):
         with self.term_mutex:
             if self.term > term:
                 return
-            logging.info(f"{self.prefix} I am the leader. Term {self.term}")
+            logging.info(f"{self.prefix}I am the leader. Term {self.term}")
             self.election_timer.cancel()
             self.state = RaftState.Leader
         self.broadcast_heartbeat()
 
-    # async def _req_vote(self, stub, req):
-    #     await stub.req
-    #     print("<", tag)
-    #     return tag
-    
     def broadcast_heartbeat(self):
         self.term_mutex.acquire()
         # with self.term_mutex:
@@ -226,7 +240,7 @@ class RaftNode:
             result = response.result()
             
             if result.term > self.term:
-                logging.debug(f"{self.prefix} Received larger term {result.term}. Becoming follower.")
+                logging.debug(f"{self.prefix}Received larger term {result.term}. Becoming follower.")
                 self.term_mutex.release()
                 self.become_follower(result.term)
 
@@ -238,20 +252,16 @@ class RaftNode:
     
     def become_follower(self, term, leader_id=None):
         with self.term_mutex:
+            self.reset_election_timer()
             if term < self.term:
                 logging.debug("Tried to become follower with lower term than current")
                 return
             self.leader_id = leader_id
             self.heartbeat_timer.cancel()
-            self.election_timer.cancel()
             self.state = RaftState.Follower
             self.term = term
-            logging.info(f"{self.prefix} I am the follower. Term {term}")
-            
-            self.election_timer = threading.Timer(self.election_timeout, self.become_candidate, [self.term])
-        self.election_timer.start()
-        # logging.debug(f"Exited follower context")
-                
+            logging.info(f"{self.prefix}I am the follower. Term {term}")
+           
     def init_connections(self):
         # with self.connection_mutex:
         for node in self.nodes:
@@ -263,6 +273,12 @@ addresses = read_conf(CONFIG_PATH)
 
 if len(sys.argv) > 1 and sys.argv[1].isdigit():
     id = int(sys.argv[1])
+    port = get_node_addr(addresses, id).split(":")[1]
+    # No check for address since for lab we assume that nodes will run only at localhost
+    if port_in_use(port):
+        print("Port is busy")
+        os._exit(0)
+        
 else:
     id = None
     for addr in addresses:
@@ -273,7 +289,6 @@ else:
     
     if id is None:
         print("No free slots left. Terminating.")
-        exit()
+        os._exit(0)
 
-addr = get_node_addr(addresses, id)
-node = RaftNode(addresses, id, addr)
+node = RaftNode(addresses, id)

@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+message Response {
+  bool is_success = 1;
+  string message = 2;
+}
+
+message Address {
+  string ip = 1;
+  int32 port = 2;
+}
+
+message NodeRegisterResponse {
+  int32 id = 1;
+  string message = 2;
+}
+
+message IdMessage {
+  int32 id = 1;
+}
+
+message FingerTableItem {
+  int32 id = 1;
+  Address address = 2;
+}
+
+message PopulateFingerTableResponse {
+  Response response = 1;
+  FingerTableItem predecessor = 2;
+  repeated FingerTableItem ft = 3;
+}
+
+message TextMessage {
+  string text = 1;
+}
+
+message DataEntry {
+  int32 key = 1;
+  string text = 2;
+}
+
+message DataTransferEntry {
+  string key = 1;
+  string text = 2;
+}
+
+message GetInfoResponse {
+  Response response = 1;
+  repeated FingerTableItem nodes = 2;
+}
+
+
+message PassDataResponse {
+  Response response = 1;
+  repeated DataEntry data = 2;
+}
+
+message InheritRequest {
+  FingerTableItem predecessor = 1;
+  repeated DataEntry data = 2;
+}
+
+service CRUDService {
+  rpc save(DataTransferEntry) returns (Response); 
+  rpc remove(TextMessage) returns (Response);
+  rpc find(TextMessage) returns (Response);
+}
+
+
+service ClientServerService {
+  rpc connect(TextMessage) returns (Response);
+  rpc get_info(TextMessage) returns (GetInfoResponse);
+}
+
+service NodeNodeService {
+  rpc inherit(InheritRequest) returns (Response);
+  rpc pass_data(FingerTableItem) returns (PassDataResponse);
+  rpc update_successor(FingerTableItem) returns (Response);
+  rpc save(DataEntry) returns (Response);
+}
+
+service NodeRegistryService {
+  rpc register(Address) returns (NodeRegisterResponse);
+  rpc deregister(IdMessage) returns (Response);
+  rpc populate_finger_table(IdMessage) returns (PopulateFingerTableResponse);
+}
